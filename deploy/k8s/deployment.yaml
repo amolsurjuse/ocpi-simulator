@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ocpi-simulator
+  labels:
+    app: ocpi-simulator
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ocpi-simulator
+  template:
+    metadata:
+      labels:
+        app: ocpi-simulator
+    spec:
+      containers:
+        - name: ocpi-simulator
+          image: ocpi-simulator:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8081
+          env:
+            - name: PORT
+              value: "8081"
+            - name: BASE_URL
+              value: "http://ocpi-simulator:8081"
+            - name: LOG_LEVEL
+              value: "info"
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
