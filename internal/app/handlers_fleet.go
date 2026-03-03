@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -65,10 +66,10 @@ type meterSendResponse struct {
 }
 
 type statsResponse struct {
-	ChargersTotal int `json:"chargersTotal"`
-	Connected     int `json:"connected"`
-	Connecting    int `json:"connecting"`
-	Disconnected  int `json:"disconnected"`
+	ChargersTotal    int `json:"chargersTotal"`
+	Connected        int `json:"connected"`
+	Connecting       int `json:"connecting"`
+	Disconnected     int `json:"disconnected"`
 	MsgRateInPerSec  int `json:"msgRateInPerSec"`
 	MsgRateOutPerSec int `json:"msgRateOutPerSec"`
 }
@@ -195,6 +196,7 @@ func (a *App) handleDeleteChargerV1(w http.ResponseWriter, r *http.Request, char
 		http.NotFound(w, r)
 		return
 	}
+	a.resetEventStep(chargerID)
 
 	a.emitFleetEvent(fleet.Event{
 		Type:      "CHARGER_DELETED",
@@ -302,13 +304,13 @@ func (a *App) handleConnectionLifecycle(w http.ResponseWriter, r *http.Request, 
 			return
 		}
 	}
-	
+
 	http.NotFound(w, r)
 }
 
 func (a *App) handleConnectCharger(w http.ResponseWriter, r *http.Request, chargerID string) {
 	var payload struct {
-		CSMSURL        string `json:"csmsUrl"`
+		CSMSURL         string                `json:"csmsUrl"`
 		ReconnectPolicy fleet.ReconnectPolicy `json:"reconnectPolicy"`
 	}
 	_ = decodeJSON(w, r, &payload)
@@ -319,29 +321,59 @@ func (a *App) handleConnectCharger(w http.ResponseWriter, r *http.Request, charg
 		return
 	}
 
-	if payload.CSMSURL != "" {
-		charger.Transport.CSMSURL = payload.CSMSURL
+	targetURL := strings.TrimSpace(payload.CSMSURL)
+	if targetURL == "" {
+		targetURL = strings.TrimSpace(charger.Transport.CSMSURL)
 	}
+	if targetURL == "" || strings.Contains(targetURL, "example.com") {
+		targetURL = a.defaultSimulatorOCPPURL(charger)
+	}
+	charger.Transport.CSMSURL = targetURL
+	_, _ = a.fleet.UpdateCharger(charger)
 
 	now := time.Now().UTC()
 	charger.ConnectionState = "CONNECTING"
 	charger.ConnectionSince = &now
-	charger.ConnectionRemote = hostFromURL(charger.Transport.CSMSURL)
+	charger.ConnectionRemote = hostFromURL(targetURL)
 	_, _ = a.fleet.UpdateCharger(charger)
 
 	a.emitFleetEvent(fleet.Event{Type: "CONNECTING", Timestamp: now, ChargerID: chargerID})
 
 	go func() {
-		time.Sleep(200 * time.Millisecond)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		connectErr := a.wsConnector.Connect(ctx, charger, targetURL)
+		if connectErr != nil {
+			at := time.Now().UTC()
+			_, _ = a.fleet.UpdateConnectionState(chargerID, "ERROR", hostFromURL(targetURL), &at)
+			a.emitFleetEvent(fleet.Event{
+				Type:      "CONNECTION_ERROR",
+				Timestamp: at,
+				ChargerID: chargerID,
+				Message:   connectErr.Error(),
+			})
+			return
+		}
+
 		connectedAt := time.Now().UTC()
-		_, _ = a.fleet.UpdateConnectionState(chargerID, "CONNECTED", charger.ConnectionRemote, &connectedAt)
+		_, _ = a.fleet.UpdateConnectionState(chargerID, "CONNECTED", hostFromURL(targetURL), &connectedAt)
+		_, _ = a.fleet.UpdateRuntime(chargerID, func(runtime *fleet.Runtime) {
+			runtime.LastHeartbeatAt = &connectedAt
+			runtime.LastMessageAt = &connectedAt
+		})
 		a.emitFleetEvent(fleet.Event{Type: "CONNECTED", Timestamp: connectedAt, ChargerID: chargerID})
+		a.resetEventStep(chargerID)
 	}()
 
 	respondJSON(w, http.StatusAccepted, updateStatusResponse{ChargerID: chargerID, Status: "CONNECTING"})
 }
 
 func (a *App) handleDisconnectCharger(w http.ResponseWriter, r *http.Request, chargerID string) {
+	var payload struct {
+		Reason string `json:"reason"`
+	}
+	_ = decodeJSON(w, r, &payload)
 	_, ok := a.fleet.GetCharger(chargerID)
 	if !ok {
 		http.NotFound(w, r)
@@ -352,12 +384,31 @@ func (a *App) handleDisconnectCharger(w http.ResponseWriter, r *http.Request, ch
 	_, _ = a.fleet.UpdateConnectionState(chargerID, "DISCONNECTING", "", &now)
 	a.emitFleetEvent(fleet.Event{Type: "DISCONNECTING", Timestamp: now, ChargerID: chargerID})
 
-	go func() {
-		time.Sleep(200 * time.Millisecond)
+	go func(reason string) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if reason == "" {
+			reason = "OPERATOR_REQUEST"
+		}
+		if err := a.wsConnector.Disconnect(ctx, chargerID, reason); err != nil {
+			at := time.Now().UTC()
+			_, _ = a.fleet.UpdateConnectionState(chargerID, "ERROR", "", &at)
+			a.emitFleetEvent(fleet.Event{
+				Type:      "CONNECTION_ERROR",
+				Timestamp: at,
+				ChargerID: chargerID,
+				Message:   err.Error(),
+			})
+			return
+		}
 		at := time.Now().UTC()
 		_, _ = a.fleet.UpdateConnectionState(chargerID, "DISCONNECTED", "", &at)
+		_, _ = a.fleet.UpdateRuntime(chargerID, func(runtime *fleet.Runtime) {
+			runtime.ActiveTransactions = []fleet.Transaction{}
+		})
+		a.resetEventStep(chargerID)
 		a.emitFleetEvent(fleet.Event{Type: "DISCONNECTED", Timestamp: at, ChargerID: chargerID})
-	}()
+	}(payload.Reason)
 
 	respondJSON(w, http.StatusAccepted, updateStatusResponse{ChargerID: chargerID, Status: "DISCONNECTING"})
 }
@@ -369,6 +420,20 @@ func (a *App) handleConnectionStatus(w http.ResponseWriter, r *http.Request, cha
 		return
 	}
 	resp := connectionResponse{ChargerID: chargerID, ConnectionState: charger.ConnectionState, Remote: charger.ConnectionRemote}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if info, err := a.wsConnector.Connection(ctx, chargerID); err == nil {
+		if info.State != "" {
+			resp.ConnectionState = info.State
+		}
+		if info.LastMessageAt != "" {
+			if parsed, parseErr := time.Parse(time.RFC3339, info.LastMessageAt); parseErr == nil {
+				_, _ = a.fleet.UpdateRuntime(chargerID, func(runtime *fleet.Runtime) {
+					runtime.LastMessageAt = &parsed
+				})
+			}
+		}
+	}
 	if charger.ConnectionSince != nil {
 		resp.Since = charger.ConnectionSince.Format(time.RFC3339)
 	}
@@ -511,13 +576,13 @@ func (a *App) handleChargingStart(w http.ResponseWriter, r *http.Request, charge
 	_ = decodeJSON(w, r, &payload)
 
 	transaction := fleet.Transaction{
-		TransactionID: fleet.NewJobID("tx"),
-		ConnectorID:   connectorID,
-		Status:        "STARTED",
-		MeterStartWh:  payload.MeterStartWh,
-		StartedAt:     time.Now().UTC(),
+		TransactionID:   fleet.NewJobID("tx"),
+		ConnectorID:     connectorID,
+		Status:          "STARTED",
+		MeterStartWh:    payload.MeterStartWh,
+		StartedAt:       time.Now().UTC(),
 		AuthorizationID: payload.Auth.AuthorizationID,
-		IdTag:         payload.Auth.IdTag,
+		IdTag:           payload.Auth.IdTag,
 	}
 
 	charger.Runtime.ActiveTransactions = append(charger.Runtime.ActiveTransactions, transaction)
@@ -746,7 +811,7 @@ func (a *App) handleBulk(w http.ResponseWriter, r *http.Request, segments []stri
 			}
 		}
 	}
-	
+
 	http.NotFound(w, r)
 }
 
@@ -901,6 +966,14 @@ func (a *App) emitFleetEvent(event fleet.Event) {
 	if err == nil {
 		a.hub.Broadcast(payload)
 	}
+
+	go func(evt fleet.Event) {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := a.wsConnector.LogEvent(ctx, evt); err != nil {
+			a.log.Warn("failed to forward fleet event", "chargerId", evt.ChargerID, "eventType", evt.Type, "error", err)
+		}
+	}(event)
 }
 
 func parseLimit(value string, fallback int) int {
@@ -968,6 +1041,26 @@ func hostFromURL(raw string) string {
 		return ""
 	}
 	return parsed.Hostname()
+}
+
+func (a *App) defaultSimulatorOCPPURL(charger fleet.Charger) string {
+	parsed, err := url.Parse(a.cfg.BaseURL)
+	if err != nil || parsed.Host == "" {
+		return ""
+	}
+	scheme := "ws"
+	if parsed.Scheme == "https" {
+		scheme = "wss"
+	}
+	protocol := "1.6"
+	if strings.EqualFold(charger.OCPPVersion, "OCPP201") || strings.EqualFold(charger.OCPPVersion, "2.0.1") {
+		protocol = "2.0.1"
+	}
+	identity := charger.OCPPIdentity
+	if identity == "" {
+		identity = charger.ChargerID
+	}
+	return fmt.Sprintf("%s://%s/ocpp/%s/%s", scheme, parsed.Host, protocol, identity)
 }
 
 func formatTemplate(template string, idx int) string {

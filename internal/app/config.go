@@ -7,13 +7,14 @@ import (
 )
 
 type Config struct {
-	Port            string
-	BaseURL         string
-	ReadTimeout     time.Duration
-	WriteTimeout    time.Duration
-	ShutdownTimeout time.Duration
-	EventInterval   time.Duration
-	LogLevel        string
+	Port                  string
+	BaseURL               string
+	WebSocketConnectorURL string
+	ReadTimeout           time.Duration
+	WriteTimeout          time.Duration
+	ShutdownTimeout       time.Duration
+	EventInterval         time.Duration
+	LogLevel              string
 }
 
 func LoadConfig() Config {
@@ -24,13 +25,14 @@ func LoadConfig() Config {
 	}
 
 	return Config{
-		Port:            port,
-		BaseURL:         strings.TrimRight(baseURL, "/"),
-		ReadTimeout:     getEnvDuration("READ_TIMEOUT", 10*time.Second),
-		WriteTimeout:    getEnvDuration("WRITE_TIMEOUT", 20*time.Second),
-		ShutdownTimeout: getEnvDuration("SHUTDOWN_TIMEOUT", 10*time.Second),
-		EventInterval:   getEnvDuration("EVENT_INTERVAL", 5*time.Second),
-		LogLevel:        strings.ToLower(getEnv("LOG_LEVEL", "info")),
+		Port:                  port,
+		BaseURL:               strings.TrimRight(baseURL, "/"),
+		WebSocketConnectorURL: strings.TrimRight(getEnv("WS_CONNECTOR_BASE_URL", "http://web-socket-connector:8091"), "/"),
+		ReadTimeout:           getEnvDuration("READ_TIMEOUT", 10*time.Second),
+		WriteTimeout:          getEnvDuration("WRITE_TIMEOUT", 20*time.Second),
+		ShutdownTimeout:       getEnvDuration("SHUTDOWN_TIMEOUT", 10*time.Second),
+		EventInterval:         getEnvDuration("EVENT_INTERVAL", 5*time.Second),
+		LogLevel:              strings.ToLower(getEnv("LOG_LEVEL", "info")),
 	}
 }
 

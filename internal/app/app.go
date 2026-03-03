@@ -17,45 +17,48 @@ import (
 )
 
 type App struct {
-	cfg   Config
-	store *store.Store
-	fleet *fleet.Store
-	hub   *ws.Hub
-	fleetHub *fleet.EventHub
-	log   *slog.Logger
-	credMu      sync.RWMutex
-	credentials ocpi.Credentials
+	cfg          Config
+	store        *store.Store
+	fleet        *fleet.Store
+	hub          *ws.Hub
+	fleetHub     *fleet.EventHub
+	wsConnector  *wsConnectorClient
+	log          *slog.Logger
+	credMu       sync.RWMutex
+	credentials  ocpi.Credentials
+	eventCycleMu sync.Mutex
+	eventCycle   map[string]int
 }
 
 type Event struct {
-	Type      string    `json:"type"`
-	Timestamp time.Time `json:"timestamp"`
-	ChargerID string    `json:"charger_id,omitempty"`
-	LocationID string   `json:"location_id,omitempty"`
-	EvseUID   string    `json:"evse_uid,omitempty"`
-	SessionID string    `json:"session_id,omitempty"`
-	Kwh       float64   `json:"kwh,omitempty"`
-	MeterValue float64  `json:"meter_value,omitempty"`
-	Message   string    `json:"message,omitempty"`
+	Type       string    `json:"type"`
+	Timestamp  time.Time `json:"timestamp"`
+	ChargerID  string    `json:"charger_id,omitempty"`
+	LocationID string    `json:"location_id,omitempty"`
+	EvseUID    string    `json:"evse_uid,omitempty"`
+	SessionID  string    `json:"session_id,omitempty"`
+	Kwh        float64   `json:"kwh,omitempty"`
+	MeterValue float64   `json:"meter_value,omitempty"`
+	Message    string    `json:"message,omitempty"`
 }
 
 func New(cfg Config, logger *slog.Logger) *App {
 	credentials := ocpi.Credentials{
-		Token:        "dev-token",
-		URL:          cfg.BaseURL + "/ocpi/2.2.1",
-		PartyID:      "AMY",
-		CountryCode:  "US",
+		Token:       "dev-token",
+		URL:         cfg.BaseURL + "/ocpi/2.2.1",
+		PartyID:     "AMY",
+		CountryCode: "US",
 		Roles: []ocpi.Role{
 			{
-				Role:        "CPO",
-				PartyID:     "AMY",
-				CountryCode: "US",
+				Role:            "CPO",
+				PartyID:         "AMY",
+				CountryCode:     "US",
 				BusinessDetails: ocpi.BusinessDetails{Name: "Electra Hub"},
 			},
 			{
-				Role:        "EMSP",
-				PartyID:     "AMY",
-				CountryCode: "US",
+				Role:            "EMSP",
+				PartyID:         "AMY",
+				CountryCode:     "US",
 				BusinessDetails: ocpi.BusinessDetails{Name: "Electra Hub"},
 			},
 		},
@@ -64,13 +67,15 @@ func New(cfg Config, logger *slog.Logger) *App {
 	}
 
 	return &App{
-		cfg:   cfg,
-		store: store.NewStore(),
-		fleet: fleet.NewStore(),
-		hub:   ws.NewHub(),
-		fleetHub: fleet.NewEventHub(),
-		log:   logger,
+		cfg:         cfg,
+		store:       store.NewStore(),
+		fleet:       fleet.NewStore(),
+		hub:         ws.NewHub(),
+		fleetHub:    fleet.NewEventHub(),
+		wsConnector: newWSConnectorClient(cfg.WebSocketConnectorURL),
+		log:         logger,
 		credentials: credentials,
+		eventCycle:  make(map[string]int),
 	}
 }
 
@@ -79,6 +84,7 @@ func (a *App) StartBackground(ctx context.Context) {
 	stop := make(chan struct{})
 	go a.fleetHub.Run(stop)
 	go a.runMeterLoop(ctx)
+	go a.runFleetEventLoop(ctx)
 
 	go func() {
 		<-ctx.Done()
@@ -102,13 +108,13 @@ func (a *App) runMeterLoop(ctx context.Context) {
 				session.Kwh += 0.2
 				a.store.UpdateSession(session)
 				a.emitEvent(Event{
-					Type:      "meter_value",
-					Timestamp: time.Now().UTC(),
-					ChargerID: session.ChargerID,
+					Type:       "meter_value",
+					Timestamp:  time.Now().UTC(),
+					ChargerID:  session.ChargerID,
 					LocationID: session.LocationID,
-					EvseUID:   session.EvseUID,
-					SessionID: session.ID,
-					Kwh:       session.Kwh,
+					EvseUID:    session.EvseUID,
+					SessionID:  session.ID,
+					Kwh:        session.Kwh,
 					MeterValue: session.Kwh,
 				})
 			}
