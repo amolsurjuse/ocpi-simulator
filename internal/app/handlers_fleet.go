@@ -570,8 +570,11 @@ func (a *App) handleChargingStart(w http.ResponseWriter, r *http.Request, charge
 			IdTag           string `json:"idTag"`
 			AuthorizationID string `json:"authorizationId"`
 		} `json:"auth"`
-		MeterStartWh int64 `json:"meterStartWh"`
-		TargetPowerW int64 `json:"targetPowerW"`
+		MeterStartWh    int64 `json:"meterStartWh"`
+		TargetPowerW    int64 `json:"targetPowerW"`
+		ChargingProfile struct {
+			Enabled bool `json:"enabled"`
+		} `json:"chargingProfile"`
 	}
 	_ = decodeJSON(w, r, &payload)
 
