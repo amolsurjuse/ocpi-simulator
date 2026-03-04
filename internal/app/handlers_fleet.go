@@ -592,6 +592,7 @@ func (a *App) handleChargingStart(w http.ResponseWriter, r *http.Request, charge
 	_, _ = a.fleet.UpdateCharger(charger)
 
 	a.emitFleetEvent(fleet.Event{Type: "TX_STARTED", Timestamp: time.Now().UTC(), ChargerID: chargerID, ConnectorID: connectorID, TransactionID: transaction.TransactionID})
+	a.emitStatusNotification(charger, connectorID, "Charging", "NoError", time.Now().UTC())
 	respondJSON(w, http.StatusOK, startChargingResponse{TransactionID: transaction.TransactionID, Status: "STARTED"})
 }
 
@@ -620,6 +621,7 @@ func (a *App) handleChargingStop(w http.ResponseWriter, r *http.Request, charger
 			charger.Runtime.ActiveTransactions = append(charger.Runtime.ActiveTransactions[:i], charger.Runtime.ActiveTransactions[i+1:]...)
 			_, _ = a.fleet.UpdateCharger(charger)
 			a.emitFleetEvent(fleet.Event{Type: "TX_STOPPED", Timestamp: time.Now().UTC(), ChargerID: chargerID, ConnectorID: connectorID, TransactionID: tx.TransactionID, Message: payload.Reason})
+			a.emitStatusNotification(charger, connectorID, "Available", "NoError", time.Now().UTC())
 			respondJSON(w, http.StatusOK, stopChargingResponse{TransactionID: tx.TransactionID, Status: "STOPPED"})
 			return
 		}

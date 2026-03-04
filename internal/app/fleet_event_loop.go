@@ -26,14 +26,27 @@ func (a *App) tickFleetEvents() {
 	now := time.Now().UTC()
 
 	for _, charger := range chargers {
-		if charger.ConnectionState != "CONNECTED" {
-			continue
-		}
 		if len(charger.Connectors) == 0 {
 			continue
 		}
 
 		connectorID := charger.Connectors[0].ConnectorID
+
+		// If a transaction is already active (e.g. manually started from UI),
+		// always emit periodic charging telemetry regardless of event-cycle state.
+		if len(charger.Runtime.ActiveTransactions) > 0 {
+			txID, meterWh := a.sendSimMeterValue(charger, now)
+			if txID != "" {
+				a.emitStatusNotification(charger, connectorID, "Charging", "NoError", now)
+				a.emitMeterTelemetry(charger, connectorID, txID, meterWh, now)
+			}
+			continue
+		}
+
+		if charger.ConnectionState != "CONNECTED" {
+			continue
+		}
+
 		step := a.nextEventStep(charger.ChargerID)
 
 		_, _ = a.fleet.UpdateRuntime(charger.ChargerID, func(runtime *fleet.Runtime) {
@@ -52,6 +65,7 @@ func (a *App) tickFleetEvents() {
 				ConnectorID: connectorID,
 				Message:     "device_management_sync",
 			})
+			a.emitStatusNotification(charger, connectorID, "Available", "NoError", now)
 		case 1:
 			txID := a.startSimTransaction(charger, connectorID, now)
 			a.emitFleetEvent(fleet.Event{
@@ -61,19 +75,11 @@ func (a *App) tickFleetEvents() {
 				ConnectorID:   connectorID,
 				TransactionID: txID,
 			})
+			a.emitStatusNotification(charger, connectorID, "Charging", "NoError", now)
 		case 2:
 			txID, meterWh := a.sendSimMeterValue(charger, now)
 			if txID != "" {
-				a.emitFleetEvent(fleet.Event{
-					Type:          "METER_VALUE",
-					Timestamp:     now,
-					ChargerID:     charger.ChargerID,
-					ConnectorID:   connectorID,
-					TransactionID: txID,
-					Data: map[string]any{
-						"meterWh": meterWh,
-					},
-				})
+				a.emitMeterTelemetry(charger, connectorID, txID, meterWh, now)
 			}
 		case 3:
 			txID := a.stopSimTransaction(charger, now)
@@ -86,6 +92,7 @@ func (a *App) tickFleetEvents() {
 					TransactionID: txID,
 					Message:       "completed",
 				})
+				a.emitStatusNotification(charger, connectorID, "Finishing", "NoError", now)
 			}
 		case 4:
 			a.emitFleetEvent(fleet.Event{
@@ -95,8 +102,57 @@ func (a *App) tickFleetEvents() {
 				ConnectorID: connectorID,
 				Message:     "ev_disconnected",
 			})
+			a.emitStatusNotification(charger, connectorID, "Available", "NoError", now)
 		}
 	}
+}
+
+func (a *App) emitStatusNotification(charger fleet.Charger, connectorID int, status string, errorCode string, now time.Time) {
+	action := "StatusNotification"
+	data := map[string]any{
+		"ocppVersion": charger.OCPPVersion,
+		"status":      status,
+		"errorCode":   errorCode,
+	}
+	if charger.OCPPVersion == "OCPP201" {
+		action = "TransactionEvent"
+		data["eventType"] = "Updated"
+		data["triggerReason"] = "ChargingStateChanged"
+		data["chargingState"] = status
+	}
+	data["ocppAction"] = action
+
+	a.emitFleetEvent(fleet.Event{
+		Type:        "STATUS_NOTIFICATION",
+		Timestamp:   now,
+		ChargerID:   charger.ChargerID,
+		ConnectorID: connectorID,
+		Data:        data,
+	})
+}
+
+func (a *App) emitMeterTelemetry(charger fleet.Charger, connectorID int, txID string, meterWh int64, now time.Time) {
+	data := map[string]any{
+		"ocppVersion": charger.OCPPVersion,
+		"meterWh":     meterWh,
+	}
+
+	if charger.OCPPVersion == "OCPP201" {
+		data["ocppAction"] = "TransactionEvent"
+		data["eventType"] = "Updated"
+		data["triggerReason"] = "MeterValuePeriodic"
+	} else {
+		data["ocppAction"] = "MeterValues"
+	}
+
+	a.emitFleetEvent(fleet.Event{
+		Type:          "METER_VALUE",
+		Timestamp:     now,
+		ChargerID:     charger.ChargerID,
+		ConnectorID:   connectorID,
+		TransactionID: txID,
+		Data:          data,
+	})
 }
 
 func (a *App) nextEventStep(chargerID string) int {
