@@ -583,13 +583,16 @@ func (a *App) handleChargingStart(w http.ResponseWriter, r *http.Request, charge
 		ConnectorID:     connectorID,
 		Status:          "STARTED",
 		MeterStartWh:    payload.MeterStartWh,
+		MeterStopWh:     payload.MeterStartWh,
 		StartedAt:       time.Now().UTC(),
 		AuthorizationID: payload.Auth.AuthorizationID,
 		IdTag:           payload.Auth.IdTag,
 	}
 
-	charger.Runtime.ActiveTransactions = append(charger.Runtime.ActiveTransactions, transaction)
-	_, _ = a.fleet.UpdateCharger(charger)
+	_, _ = a.fleet.UpdateRuntime(chargerID, func(runtime *fleet.Runtime) {
+		runtime.ActiveTransactions = append(runtime.ActiveTransactions, transaction)
+		runtime.LastMessageAt = &transaction.StartedAt
+	})
 
 	a.emitFleetEvent(fleet.Event{Type: "TX_STARTED", Timestamp: time.Now().UTC(), ChargerID: chargerID, ConnectorID: connectorID, TransactionID: transaction.TransactionID})
 	a.emitStatusNotification(charger, connectorID, "Charging", "NoError", time.Now().UTC())
@@ -610,27 +613,28 @@ func (a *App) handleChargingStop(w http.ResponseWriter, r *http.Request, charger
 	}
 	_ = decodeJSON(w, r, &payload)
 
-	found := false
-	for i, tx := range charger.Runtime.ActiveTransactions {
-		if tx.TransactionID == payload.TransactionID {
-			found = true
-			stoppedAt := time.Now().UTC()
-			tx.Status = "STOPPED"
-			tx.MeterStopWh = payload.MeterStopWh
-			tx.StoppedAt = &stoppedAt
-			charger.Runtime.ActiveTransactions = append(charger.Runtime.ActiveTransactions[:i], charger.Runtime.ActiveTransactions[i+1:]...)
-			_, _ = a.fleet.UpdateCharger(charger)
-			a.emitFleetEvent(fleet.Event{Type: "TX_STOPPED", Timestamp: time.Now().UTC(), ChargerID: chargerID, ConnectorID: connectorID, TransactionID: tx.TransactionID, Message: payload.Reason})
-			a.emitStatusNotification(charger, connectorID, "Available", "NoError", time.Now().UTC())
-			respondJSON(w, http.StatusOK, stopChargingResponse{TransactionID: tx.TransactionID, Status: "STOPPED"})
+	var stoppedTxID string
+	stoppedAt := time.Now().UTC()
+	_, _ = a.fleet.UpdateRuntime(chargerID, func(runtime *fleet.Runtime) {
+		for i, tx := range runtime.ActiveTransactions {
+			if tx.TransactionID != payload.TransactionID {
+				continue
+			}
+			stoppedTxID = tx.TransactionID
+			runtime.ActiveTransactions = append(runtime.ActiveTransactions[:i], runtime.ActiveTransactions[i+1:]...)
+			runtime.LastMessageAt = &stoppedAt
 			return
 		}
-	}
+	})
 
-	if !found {
+	if stoppedTxID == "" {
 		http.Error(w, "transaction not found", http.StatusNotFound)
 		return
 	}
+
+	a.emitFleetEvent(fleet.Event{Type: "TX_STOPPED", Timestamp: stoppedAt, ChargerID: chargerID, ConnectorID: connectorID, TransactionID: stoppedTxID, Message: payload.Reason})
+	a.emitStatusNotification(charger, connectorID, "Available", "NoError", stoppedAt)
+	respondJSON(w, http.StatusOK, stopChargingResponse{TransactionID: stoppedTxID, Status: "STOPPED"})
 }
 
 func (a *App) handleMeterSend(w http.ResponseWriter, r *http.Request, chargerID string, connectorID int) {
