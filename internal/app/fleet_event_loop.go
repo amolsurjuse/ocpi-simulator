@@ -129,20 +129,24 @@ func (a *App) emitStatusNotification(charger fleet.Charger, connectorID int, sta
 		ConnectorID: connectorID,
 		Data:        data,
 	})
+
+	a.forwardOCPPAction(charger, action, buildStatusPayload(charger, connectorID, status, errorCode, now))
 }
 
 func (a *App) emitMeterTelemetry(charger fleet.Charger, connectorID int, txID string, meterWh int64, now time.Time) {
+	action := "MeterValues"
 	data := map[string]any{
 		"ocppVersion": charger.OCPPVersion,
 		"meterWh":     meterWh,
 	}
 
 	if charger.OCPPVersion == "OCPP201" {
-		data["ocppAction"] = "TransactionEvent"
+		action = "TransactionEvent"
+		data["ocppAction"] = action
 		data["eventType"] = "Updated"
 		data["triggerReason"] = "MeterValuePeriodic"
 	} else {
-		data["ocppAction"] = "MeterValues"
+		data["ocppAction"] = action
 	}
 
 	a.emitFleetEvent(fleet.Event{
@@ -153,6 +157,8 @@ func (a *App) emitMeterTelemetry(charger fleet.Charger, connectorID int, txID st
 		TransactionID: txID,
 		Data:          data,
 	})
+
+	a.forwardOCPPAction(charger, action, buildMeterPayload(charger, connectorID, txID, meterWh, now))
 }
 
 func (a *App) nextEventStep(chargerID string) int {
@@ -236,4 +242,90 @@ func (a *App) stopSimTransaction(charger fleet.Charger, now time.Time) string {
 	})
 
 	return txID
+}
+
+func (a *App) forwardOCPPAction(charger fleet.Charger, action string, payload map[string]any) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := a.wsConnector.Send(ctx, charger.ChargerID, action, payload); err != nil {
+			a.log.Warn("failed to forward ocpp action", "chargerId", charger.ChargerID, "action", action, "error", err)
+		}
+	}()
+}
+
+func buildStatusPayload(charger fleet.Charger, connectorID int, status, errorCode string, now time.Time) map[string]any {
+	if charger.OCPPVersion == "OCPP201" {
+		payload := map[string]any{
+			"eventType":     "Updated",
+			"timestamp":     now.Format(time.RFC3339),
+			"triggerReason": "ChargingStateChanged",
+			"evse": map[string]any{
+				"id": connectorID,
+			},
+			"transactionInfo": map[string]any{
+				"chargingState": status,
+			},
+		}
+		if errorCode != "" {
+			payload["customData"] = map[string]any{"errorCode": errorCode}
+		}
+		return payload
+	}
+
+	return map[string]any{
+		"connectorId": connectorID,
+		"status":      status,
+		"errorCode":   errorCode,
+		"timestamp":   now.Format(time.RFC3339),
+	}
+}
+
+func buildMeterPayload(charger fleet.Charger, connectorID int, txID string, meterWh int64, now time.Time) map[string]any {
+	if charger.OCPPVersion == "OCPP201" {
+		payload := map[string]any{
+			"eventType":     "Updated",
+			"timestamp":     now.Format(time.RFC3339),
+			"triggerReason": "MeterValuePeriodic",
+			"evse": map[string]any{
+				"id": connectorID,
+			},
+			"meterValue": []map[string]any{
+				{
+					"timestamp": now.Format(time.RFC3339),
+					"sampledValue": []map[string]any{
+						{
+							"value":    meterWh,
+							"measurand": "Energy.Active.Import.Register",
+							"unitOfMeasure": map[string]any{
+								"unit": "Wh",
+							},
+						},
+					},
+				},
+			},
+		}
+		if txID != "" {
+			payload["transactionInfo"] = map[string]any{"transactionId": txID}
+		}
+		return payload
+	}
+
+	payload := map[string]any{
+		"connectorId":   connectorID,
+		"transactionId": txID,
+		"meterValue": []map[string]any{
+			{
+				"timestamp": now.Format(time.RFC3339),
+				"sampledValue": []map[string]any{
+					{
+						"value":     meterWh,
+						"measurand": "Energy.Active.Import.Register",
+						"unit":      "Wh",
+					},
+				},
+			},
+		},
+	}
+	return payload
 }

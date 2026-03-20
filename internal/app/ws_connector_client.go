@@ -40,6 +40,12 @@ type wsConnectionInfo struct {
 	Error         string `json:"error,omitempty"`
 }
 
+type wsSendRequest struct {
+	ChargerID string         `json:"chargerId"`
+	Action    string         `json:"action"`
+	Payload   map[string]any `json:"payload"`
+}
+
 func newWSConnectorClient(baseURL string) *wsConnectorClient {
 	return &wsConnectorClient{
 		baseURL: strings.TrimRight(baseURL, "/"),
@@ -75,6 +81,15 @@ func (c *wsConnectorClient) Connection(ctx context.Context, chargerID string) (w
 
 func (c *wsConnectorClient) LogEvent(ctx context.Context, event fleet.Event) error {
 	return c.doJSON(ctx, http.MethodPost, "/events", event, nil)
+}
+
+func (c *wsConnectorClient) Send(ctx context.Context, chargerID, action string, payload map[string]any) error {
+	reqBody := wsSendRequest{
+		ChargerID: chargerID,
+		Action:    action,
+		Payload:   payload,
+	}
+	return c.doJSON(ctx, http.MethodPost, "/send", reqBody, nil)
 }
 
 func (c *wsConnectorClient) doJSON(ctx context.Context, method, path string, body any, out any) error {
