@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"hash/fnv"
 	"time"
 
 	"ocpi-simulator/internal/fleet"
@@ -32,13 +33,29 @@ func (a *App) tickFleetEvents() {
 
 		connectorID := charger.Connectors[0].ConnectorID
 
-		// If a transaction is already active (e.g. manually started from UI),
-		// always emit periodic charging telemetry regardless of event-cycle state.
 		if len(charger.Runtime.ActiveTransactions) > 0 {
-			txID, meterWh := a.sendSimMeterValue(charger, now)
-			if txID != "" {
-				a.emitStatusNotification(charger, connectorID, "Charging", "NoError", now)
-				a.emitMeterTelemetry(charger, connectorID, txID, meterWh, now)
+			tx := charger.Runtime.ActiveTransactions[0]
+			if now.Sub(tx.StartedAt) >= 4*a.cfg.EventInterval {
+				txID := a.stopSimTransaction(charger, now)
+				if txID != "" {
+					a.emitFleetEvent(fleet.Event{
+						Type:          "STOP",
+						Timestamp:     now,
+						ChargerID:     charger.ChargerID,
+						ConnectorID:   connectorID,
+						TransactionID: txID,
+						Message:       "ev_disconnected",
+					})
+					a.emitStatusNotification(charger, connectorID, "Finishing", "NoError", now)
+					a.emitStopTransaction(charger, connectorID, txID, tx.MeterStopWh, "EVDisconnected", now)
+					a.emitStatusNotification(charger, connectorID, "Available", "NoError", now)
+				}
+			} else {
+				txID, meterWh := a.sendSimMeterValue(charger, now)
+				if txID != "" {
+					a.emitStatusNotification(charger, connectorID, "Charging", "NoError", now)
+					a.emitMeterTelemetry(charger, connectorID, txID, meterWh, now)
+				}
 			}
 			continue
 		}
@@ -75,13 +92,19 @@ func (a *App) tickFleetEvents() {
 				ConnectorID:   connectorID,
 				TransactionID: txID,
 			})
-			a.emitStatusNotification(charger, connectorID, "Charging", "NoError", now)
+			a.emitStatusNotification(charger, connectorID, "Preparing", "NoError", now)
+			a.emitStartTransaction(charger, connectorID, txID, now)
 		case 2:
 			txID, meterWh := a.sendSimMeterValue(charger, now)
 			if txID != "" {
+				a.emitStatusNotification(charger, connectorID, "Charging", "NoError", now)
 				a.emitMeterTelemetry(charger, connectorID, txID, meterWh, now)
 			}
 		case 3:
+			meterStopWh := int64(charger.Config.Metering.EnergyWhStart)
+			if len(charger.Runtime.ActiveTransactions) > 0 {
+				meterStopWh = charger.Runtime.ActiveTransactions[0].MeterStopWh
+			}
 			txID := a.stopSimTransaction(charger, now)
 			if txID != "" {
 				a.emitFleetEvent(fleet.Event{
@@ -93,6 +116,7 @@ func (a *App) tickFleetEvents() {
 					Message:       "completed",
 				})
 				a.emitStatusNotification(charger, connectorID, "Finishing", "NoError", now)
+				a.emitStopTransaction(charger, connectorID, txID, meterStopWh, "Local", now)
 			}
 		case 4:
 			a.emitFleetEvent(fleet.Event{
@@ -105,6 +129,16 @@ func (a *App) tickFleetEvents() {
 			a.emitStatusNotification(charger, connectorID, "Available", "NoError", now)
 		}
 	}
+}
+
+func (a *App) emitStartTransaction(charger fleet.Charger, connectorID int, txID string, now time.Time) {
+	action := "StartTransaction"
+	a.forwardOCPPAction(charger, action, buildStartTransactionPayload(charger, connectorID, txID, now))
+}
+
+func (a *App) emitStopTransaction(charger fleet.Charger, connectorID int, txID string, meterStopWh int64, reason string, now time.Time) {
+	action := "StopTransaction"
+	a.forwardOCPPAction(charger, action, buildStopTransactionPayload(charger, connectorID, txID, meterStopWh, reason, now))
 }
 
 func (a *App) emitStatusNotification(charger fleet.Charger, connectorID int, status string, errorCode string, now time.Time) {
@@ -282,6 +316,7 @@ func buildStatusPayload(charger fleet.Charger, connectorID int, status, errorCod
 }
 
 func buildMeterPayload(charger fleet.Charger, connectorID int, txID string, meterWh int64, now time.Time) map[string]any {
+	numericTxID := numericTransactionID(txID)
 	if charger.OCPPVersion == "OCPP201" {
 		payload := map[string]any{
 			"eventType":     "Updated",
@@ -295,7 +330,7 @@ func buildMeterPayload(charger fleet.Charger, connectorID int, txID string, mete
 					"timestamp": now.Format(time.RFC3339),
 					"sampledValue": []map[string]any{
 						{
-							"value":    meterWh,
+							"value":     meterWh,
 							"measurand": "Energy.Active.Import.Register",
 							"unitOfMeasure": map[string]any{
 								"unit": "Wh",
@@ -306,14 +341,14 @@ func buildMeterPayload(charger fleet.Charger, connectorID int, txID string, mete
 			},
 		}
 		if txID != "" {
-			payload["transactionInfo"] = map[string]any{"transactionId": txID}
+			payload["transactionInfo"] = map[string]any{"transactionId": numericTxID}
 		}
 		return payload
 	}
 
 	payload := map[string]any{
 		"connectorId":   connectorID,
-		"transactionId": txID,
+		"transactionId": numericTxID,
 		"meterValue": []map[string]any{
 			{
 				"timestamp": now.Format(time.RFC3339),
@@ -328,4 +363,91 @@ func buildMeterPayload(charger fleet.Charger, connectorID int, txID string, mete
 		},
 	}
 	return payload
+}
+
+func buildStartTransactionPayload(charger fleet.Charger, connectorID int, txID string, now time.Time) map[string]any {
+	numericTxID := numericTransactionID(txID)
+	if charger.OCPPVersion == "OCPP201" {
+		return map[string]any{
+			"eventType":     "Started",
+			"timestamp":     now.Format(time.RFC3339),
+			"triggerReason": "RemoteStart",
+			"evse": map[string]any{
+				"id": connectorID,
+			},
+			"transactionInfo": map[string]any{
+				"transactionId": numericTxID,
+			},
+			"meterValue": []map[string]any{
+				{
+					"timestamp": now.Format(time.RFC3339),
+					"sampledValue": []map[string]any{
+						{
+							"value":     charger.Config.Metering.EnergyWhStart,
+							"measurand": "Energy.Active.Import.Register",
+							"unitOfMeasure": map[string]any{
+								"unit": "Wh",
+							},
+						},
+					},
+				},
+			},
+		}
+	}
+
+	return map[string]any{
+		"connectorId":   connectorID,
+		"idTag":         "SIMULATOR",
+		"meterStart":    charger.Config.Metering.EnergyWhStart,
+		"timestamp":     now.Format(time.RFC3339),
+		"transactionId": numericTxID,
+	}
+}
+
+func buildStopTransactionPayload(charger fleet.Charger, connectorID int, txID string, meterStopWh int64, reason string, now time.Time) map[string]any {
+	numericTxID := numericTransactionID(txID)
+	if charger.OCPPVersion == "OCPP201" {
+		return map[string]any{
+			"eventType":     "Ended",
+			"timestamp":     now.Format(time.RFC3339),
+			"triggerReason": "EVCommunicationLost",
+			"evse": map[string]any{
+				"id": connectorID,
+			},
+			"transactionInfo": map[string]any{
+				"transactionId": numericTxID,
+			},
+			"meterValue": []map[string]any{
+				{
+					"timestamp": now.Format(time.RFC3339),
+					"sampledValue": []map[string]any{
+						{
+							"value":     meterStopWh,
+							"measurand": "Energy.Active.Import.Register",
+							"unitOfMeasure": map[string]any{
+								"unit": "Wh",
+							},
+						},
+					},
+				},
+			},
+			"stoppedReason": reason,
+		}
+	}
+
+	return map[string]any{
+		"transactionId": numericTxID,
+		"meterStop":     meterStopWh,
+		"timestamp":     now.Format(time.RFC3339),
+		"reason":        reason,
+	}
+}
+
+func numericTransactionID(txID string) int {
+	if txID == "" {
+		return 0
+	}
+	hasher := fnv.New32a()
+	_, _ = hasher.Write([]byte(txID))
+	return int(hasher.Sum32()%900000) + 100000
 }
