@@ -1,0 +1,1051 @@
+<div class="app-shell">
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">EH</div>
+      <div>
+        <h1 class="brand-title">ElectraHub OCPP Simulator</h1>
+        <p class="brand-subtitle">Manage fleet, operations, and live event telemetry</p>
+      </div>
+    </div>
+
+    <div class="topbar-actions">
+      <div class="field base-url">
+        <label>API base URL</label>
+        <input [formControl]="baseUrlControl" placeholder="http://localhost:8081" />
+      </div>
+      <button class="btn ghost" type="button" (click)="applyBaseUrl()" [disabled]="isLoading()">Apply</button>
+      <button class="btn ghost" type="button" (click)="fetchStats()" [disabled]="isLoading()">Refresh stats</button>
+      <button class="btn ghost" type="button" (click)="listChargerFleet()" [disabled]="isLoading()">Refresh fleet</button>
+    </div>
+  </header>
+
+  <nav class="screen-nav">
+    <button
+      *ngFor="let screen of screens"
+      class="screen-btn"
+      type="button"
+      [class.active]="activeScreen() === screen.key"
+      (click)="setScreen(screen.key)">
+      <span>{{ screen.label }}</span>
+      <small>{{ screen.description }}</small>
+    </button>
+  </nav>
+
+  <section class="stats">
+    <article class="stat-card">
+      <p>Total chargers</p>
+      <h3>{{ stats()?.chargersTotal ?? 0 }}</h3>
+    </article>
+    <article class="stat-card">
+      <p>Connected</p>
+      <h3>{{ stats()?.connected ?? 0 }}</h3>
+    </article>
+    <article class="stat-card">
+      <p>Connecting</p>
+      <h3>{{ stats()?.connecting ?? 0 }}</h3>
+    </article>
+    <article class="stat-card">
+      <p>Disconnected</p>
+      <h3>{{ stats()?.disconnected ?? 0 }}</h3>
+    </article>
+    <article class="stat-card">
+      <p>Inbound msg/s</p>
+      <h3>{{ stats()?.msgRateInPerSec ?? 0 }}</h3>
+    </article>
+    <article class="stat-card">
+      <p>Outbound msg/s</p>
+      <h3>{{ stats()?.msgRateOutPerSec ?? 0 }}</h3>
+    </article>
+  </section>
+
+  <p class="banner" *ngIf="error() as appError">{{ appError }}</p>
+
+  <section class="screen" *ngIf="activeScreen() === 'dashboard'">
+    <div class="dashboard-grid">
+      <article class="panel">
+        <header>
+          <div>
+            <h2>Current focus</h2>
+            <p>Selected charger and connection state</p>
+          </div>
+          <span class="pill muted" *ngIf="!selectedCharger()">No charger selected</span>
+          <span class="pill on" *ngIf="selectedCharger()">{{ selectedCharger()?.connectionState }}</span>
+        </header>
+
+        <div class="summary-card" *ngIf="selectedCharger() as charger; else noChargerSelected">
+          <div class="summary">
+            <div>
+              <p>Charger ID</p>
+              <h4>{{ charger.chargerId }}</h4>
+            </div>
+            <div>
+              <p>Identity</p>
+              <h4>{{ charger.ocppIdentity || '-' }}</h4>
+            </div>
+            <div>
+              <p>OCPP</p>
+              <h4>{{ charger.ocppVersion }}</h4>
+            </div>
+            <div>
+              <p>Last heartbeat</p>
+              <h4>{{ charger.runtime?.lastHeartbeatAt || '-' }}</h4>
+            </div>
+          </div>
+          <div class="row actions">
+            <button class="btn ghost" type="button" (click)="fetchConnection(charger.chargerId)">Refresh connection</button>
+            <button class="btn ghost" type="button" (click)="setScreen('operations')">Open operations</button>
+          </div>
+        </div>
+
+        <ng-template #noChargerSelected>
+          <div class="summary-card empty">
+            Select a charger in Fleet screen to inspect details and run operations.
+          </div>
+        </ng-template>
+      </article>
+
+      <article class="panel">
+        <header>
+          <div>
+            <h2>Live event stream</h2>
+            <p>Subscribe to real-time simulator events</p>
+          </div>
+          <span class="pill" [class.on]="eventStreamConnected()">
+            {{ eventStreamConnected() ? 'Connected' : 'Disconnected' }}
+          </span>
+        </header>
+        <div class="row actions">
+          <button class="btn ghost" type="button" (click)="openEventStream()">Connect stream</button>
+          <button class="btn ghost" type="button" (click)="closeEventStream()">Disconnect stream</button>
+          <button class="btn ghost" type="button" (click)="setScreen('events')">Open event log</button>
+        </div>
+        <div class="summary-card">
+          <p><strong>{{ events().length }}</strong> events buffered in UI</p>
+          <p><strong>{{ actionLog().length }}</strong> recent action entries</p>
+        </div>
+      </article>
+    </div>
+  </section>
+
+  <section class="screen" *ngIf="activeScreen() === 'fleet'">
+    <article class="panel full">
+        <header>
+          <div>
+            <h2>Fleet inventory</h2>
+            <p>List, inspect, and remove chargers with connector-level runtime detail.</p>
+          </div>
+          <div class="row actions">
+            <button class="btn primary" type="button" (click)="setScreen('provision')">Provision charger</button>
+          </div>
+        </header>
+
+        <div class="summary-card">
+          <div class="summary-card-header">
+            <div>
+              <h3>Environment sync</h3>
+              <p class="summary-caption">
+                Pull chargers and connectors from any environment via <code>getChargers</code> and load them into the simulator.
+              </p>
+            </div>
+          </div>
+          <div class="row">
+            <div class="field">
+              <label>Environment URL</label>
+              <input [formControl]="environmentUrlControl" placeholder="https://dev.electrahub.com:8443" />
+            </div>
+            <div class="field">
+              <label>getChargers path</label>
+              <input [formControl]="getChargersPathControl" placeholder="/api/v1/chargers" />
+            </div>
+            <div class="field">
+              <label>Bearer token (optional)</label>
+              <input [formControl]="bearerTokenControl" placeholder="ey..." />
+            </div>
+            <div class="field inline">
+              <label>
+                <input type="checkbox" [formControl]="skipTlsVerifyControl" />
+                Skip TLS verification
+              </label>
+            </div>
+          </div>
+          <div class="row actions">
+            <button class="btn ghost" type="button" (click)="importEnvironmentChargers()" [disabled]="isLoading()">
+              Import from environment
+            </button>
+          </div>
+          <div class="summary" *ngIf="environmentSyncSummary() as summary">
+            <div>
+              <p>Imported</p>
+              <h4>{{ summary.imported }}</h4>
+            </div>
+            <div>
+              <p>Created</p>
+              <h4>{{ summary.created }}</h4>
+            </div>
+            <div>
+              <p>Updated</p>
+              <h4>{{ summary.updated }}</h4>
+            </div>
+            <div>
+              <p>Failed</p>
+              <h4>{{ summary.failed }}</h4>
+            </div>
+            <div>
+              <p>Source URL</p>
+              <h4>{{ summary.getChargersUrl }}</h4>
+            </div>
+          </div>
+          <p class="banner" *ngIf="(environmentSyncSummary()?.errors?.length ?? 0) > 0">
+            Import completed with errors: {{ environmentSyncSummary()?.errors?.slice(0, 3)?.join('; ') }}
+          </p>
+        </div>
+
+        <form class="form" [formGroup]="listFilters" (ngSubmit)="listChargerFleet()">
+          <div class="row filter-row">
+            <div class="field">
+              <label>Status</label>
+              <select formControlName="status">
+                <option value="">All</option>
+                <option value="CONNECTED">CONNECTED</option>
+                <option value="CONNECTING">CONNECTING</option>
+                <option value="DISCONNECTED">DISCONNECTED</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>Version</label>
+              <select formControlName="ocppVersion">
+                <option value="">All</option>
+                <option value="OCPP16J">OCPP16J</option>
+                <option value="OCPP201">OCPP201</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>Limit</label>
+              <input type="number" formControlName="limit" />
+            </div>
+            <div class="field">
+              <label>Cursor</label>
+              <input formControlName="cursor" />
+            </div>
+            <div class="row actions">
+              <button class="btn ghost" type="submit" [disabled]="isLoading()">Refresh</button>
+            </div>
+          </div>
+        </form>
+
+        <div class="table">
+          <div class="table-head">
+            <span>Charger</span>
+            <span>Identity</span>
+            <span>Version</span>
+            <span>Connection</span>
+            <span>Txn</span>
+            <span>Actions</span>
+          </div>
+          <div
+            class="table-row"
+            *ngFor="let charger of chargers(); trackBy: trackByChargerId"
+            [class.selected]="selectedChargerId() === charger.chargerId">
+            <strong>{{ charger.chargerId }}</strong>
+            <span>{{ charger.ocppIdentity || '-' }}</span>
+            <span>{{ charger.ocppVersion }}</span>
+            <span>{{ charger.connectionState }}</span>
+            <span>{{ charger.activeTransactions ?? 0 }}</span>
+            <div class="row actions icon-actions">
+              <button
+                class="icon-action"
+                type="button"
+                title="Select charger"
+                aria-label="Select charger"
+                (click)="selectCharger(charger.chargerId)">
+                <svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M4 12h16M12 4v16"></path>
+                </svg>
+              </button>
+              <button
+                class="icon-action"
+                type="button"
+                title="Open operations"
+                aria-label="Open operations"
+                (click)="setScreen('operations'); selectCharger(charger.chargerId)">
+                <svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M10 6h10M10 12h10M10 18h10M4 6h.01M4 12h.01M4 18h.01"></path>
+                </svg>
+              </button>
+              <button
+                class="icon-action danger"
+                type="button"
+                title="Delete charger"
+                aria-label="Delete charger"
+                (click)="deleteCharger(charger.chargerId)">
+                <svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M4 7h16M9 7V5h6v2M9 10v7M15 10v7M7 7l1 12h8l1-12"></path>
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="summary-card" *ngIf="selectedCharger() as charger; else emptySelection">
+          <div class="summary-card-header">
+            <div>
+              <h3>{{ charger.chargerId }}</h3>
+              <p class="summary-caption">Selected charger detail with connector-by-connector runtime activity.</p>
+            </div>
+            <div class="row actions">
+              <button class="btn ghost" type="button" (click)="refreshSelected()">Refresh selected charger</button>
+              <button class="btn ghost" type="button" (click)="setScreen('operations')">Open operations</button>
+            </div>
+          </div>
+
+          <div class="summary">
+            <div>
+              <p>Connection</p>
+              <h4>{{ selectedConnection()?.connectionState || charger.connectionState }}</h4>
+            </div>
+            <div>
+              <p>Remote</p>
+              <h4>{{ selectedConnection()?.remote || charger.transport?.csmsUrl || '-' }}</h4>
+            </div>
+            <div>
+              <p>Connectors</p>
+              <h4>{{ charger.connectors?.length ?? 0 }}</h4>
+            </div>
+            <div>
+              <p>Active tx</p>
+              <h4>{{ getActiveTransactionCount(charger) }}</h4>
+            </div>
+            <div>
+              <p>Last message</p>
+              <h4>{{ charger.runtime?.lastMessageAt || '-' }}</h4>
+            </div>
+            <div>
+              <p>Last heartbeat</p>
+              <h4>{{ charger.runtime?.lastHeartbeatAt || '-' }}</h4>
+            </div>
+          </div>
+
+          <div class="connector-grid" *ngIf="charger.connectors?.length; else noConnectors">
+            <article class="connector-card" *ngFor="let connector of charger.connectors; trackBy: trackByConnectorId">
+              <div class="connector-card-head">
+                <div>
+                  <p>Connector {{ connector.connectorId }}</p>
+                  <h4>{{ connector.type }} · {{ connector.maxKw }} kW</h4>
+                </div>
+                <span
+                  class="pill"
+                  [class.on]="isConnectorHealthy(connector.status)"
+                  [class.warn]="isConnectorWarning(connector.status)"
+                  [class.muted]="!connector.status">
+                  {{ connector.status || 'Unknown' }}
+                </span>
+              </div>
+
+              <div class="connector-meta">
+                <div>
+                  <span>Error</span>
+                  <strong>{{ connector.errorCode || 'NoError' }}</strong>
+                </div>
+                <div>
+                  <span>Transaction</span>
+                  <strong>{{ getConnectorTransaction(connector.connectorId)?.transactionId || 'Idle' }}</strong>
+                </div>
+                <div>
+                  <span>Meter stop Wh</span>
+                  <strong>{{ getConnectorTransaction(connector.connectorId)?.meterStopWh ?? '-' }}</strong>
+                </div>
+                <div>
+                  <span>Auth</span>
+                  <strong>{{ getConnectorTransaction(connector.connectorId)?.authorizationId || getConnectorTransaction(connector.connectorId)?.idTag || '-' }}</strong>
+                </div>
+              </div>
+
+              <div class="row actions">
+                <button class="link" type="button" (click)="setConnectorContext(connector.connectorId); setScreen('operations')">
+                  Operate connector
+                </button>
+              </div>
+            </article>
+          </div>
+
+          <ng-template #noConnectors>
+            <div class="summary-card empty">No connectors are configured for this charger yet.</div>
+          </ng-template>
+
+          <form class="form" [formGroup]="configForm" (ngSubmit)="patchConfig()">
+            <div class="row">
+              <div class="field">
+                <label>Heartbeat interval</label>
+                <input type="number" formControlName="heartbeatIntervalSec" />
+              </div>
+              <div class="field">
+                <label>Meter interval</label>
+                <input type="number" formControlName="meterValuesIntervalSec" />
+              </div>
+              <div class="field">
+                <label>SOC start %</label>
+                <input type="number" formControlName="socStartPercent" />
+              </div>
+              <div class="field">
+                <label>SOC end %</label>
+                <input type="number" formControlName="socEndPercent" />
+              </div>
+            </div>
+            <div class="row actions">
+              <button class="btn ghost" type="submit">Update config</button>
+            </div>
+          </form>
+        </div>
+
+        <ng-template #emptySelection>
+          <div class="summary-card empty">Select a charger to view details and patch config.</div>
+        </ng-template>
+      </article>
+  </section>
+
+  <section class="screen" *ngIf="activeScreen() === 'provision'">
+    <article class="panel full">
+      <header>
+        <div>
+          <h2>Provision charger</h2>
+          <p>Create and configure a simulated charger on a dedicated page.</p>
+        </div>
+        <div class="row actions">
+          <button class="btn ghost" type="button" (click)="setScreen('fleet')">Back to fleet</button>
+          <button class="btn ghost" type="button" (click)="addConnector()">Add connector</button>
+        </div>
+      </header>
+
+      <form class="form" [formGroup]="createForm" (ngSubmit)="createCharger()">
+        <div class="row">
+          <div class="field">
+            <label>Charger ID</label>
+            <input formControlName="chargerId" />
+          </div>
+          <div class="field">
+            <label>OCPP identity</label>
+            <input formControlName="ocppIdentity" />
+          </div>
+          <div class="field">
+            <label>OCPP version</label>
+            <select formControlName="ocppVersion">
+              <option value="OCPP16J">OCPP 1.6J</option>
+              <option value="OCPP201">OCPP 2.0.1</option>
+            </select>
+          </div>
+        </div>
+
+        <div formGroupName="transport" class="stack">
+          <div class="row">
+            <div class="field">
+              <label>Transport role</label>
+              <select formControlName="role">
+                <option value="CP">Charge Point</option>
+                <option value="CSMS">CSMS</option>
+              </select>
+            </div>
+            <div class="field span-2">
+              <label>CSMS URL</label>
+              <input formControlName="csmsUrl" />
+            </div>
+          </div>
+          <div class="toggle-group" formGroupName="tls">
+            <label class="toggle"><input type="checkbox" formControlName="enabled" />TLS enabled</label>
+            <label class="toggle"><input type="checkbox" formControlName="skipVerify" />Skip verify</label>
+          </div>
+        </div>
+
+        <details class="accordion" open>
+          <summary>Connectors</summary>
+          <div class="accordion-body" formArrayName="connectors">
+            <div
+              class="row"
+              *ngFor="let connector of connectors.controls; let i = index; trackBy: trackByIndex"
+              [formGroupName]="i">
+              <div class="field">
+                <label>Connector ID</label>
+                <input type="number" formControlName="connectorId" />
+              </div>
+              <div class="field">
+                <label>Type</label>
+                <input formControlName="type" />
+              </div>
+              <div class="field">
+                <label>Max kW</label>
+                <input type="number" formControlName="maxKw" />
+              </div>
+              <div class="row actions">
+                <button class="btn ghost" type="button" (click)="removeConnector(i)">Remove</button>
+              </div>
+            </div>
+          </div>
+        </details>
+
+        <details class="accordion">
+          <summary>Config</summary>
+          <div class="accordion-body" formGroupName="config">
+            <div class="row">
+              <div class="field">
+                <label>Heartbeat interval (sec)</label>
+                <input type="number" formControlName="heartbeatIntervalSec" />
+              </div>
+              <div class="field">
+                <label>Meter values interval (sec)</label>
+                <input type="number" formControlName="meterValuesIntervalSec" />
+              </div>
+            </div>
+
+            <div formGroupName="soc">
+              <div class="row">
+                <label class="toggle"><input type="checkbox" formControlName="enabled" />SOC model enabled</label>
+                <div class="field">
+                  <label>SOC start %</label>
+                  <input type="number" formControlName="startPercent" />
+                </div>
+                <div class="field">
+                  <label>SOC end %</label>
+                  <input type="number" formControlName="endPercent" />
+                </div>
+                <div class="field">
+                  <label>SOC rate %/min</label>
+                  <input type="number" step="0.1" formControlName="ratePercentPerMin" />
+                </div>
+              </div>
+            </div>
+          </div>
+        </details>
+
+        <details class="accordion">
+          <summary>Tags</summary>
+          <div class="accordion-body" formGroupName="tags">
+            <div class="row">
+              <div class="field">
+                <label>Site</label>
+                <input formControlName="site" />
+              </div>
+              <div class="field">
+                <label>Shard</label>
+                <input formControlName="shard" />
+              </div>
+            </div>
+          </div>
+        </details>
+
+        <div class="row actions">
+          <button class="btn ghost" type="button" (click)="setScreen('fleet')">Cancel</button>
+          <button class="btn primary" type="submit" [disabled]="isLoading()">Create charger</button>
+        </div>
+      </form>
+    </article>
+  </section>
+
+  <section class="screen" *ngIf="activeScreen() === 'operations'">
+    <div class="summary-card empty" *ngIf="!selectedCharger()">
+      Pick a charger from Fleet first, then come back here to run operations.
+    </div>
+
+    <div class="stack" *ngIf="selectedCharger() as charger">
+      <article class="panel">
+        <header>
+          <div>
+            <h2>Connector operations</h2>
+            <p>Run lifecycle, auth, charging, and low-level OCPP controls with one connector-focused workspace.</p>
+          </div>
+          <div class="row actions">
+            <button class="btn ghost" type="button" (click)="refreshSelected()">Refresh charger</button>
+            <button class="btn ghost" type="button" (click)="setScreen('fleet')">Back to fleet</button>
+          </div>
+        </header>
+
+        <div class="summary">
+          <div>
+            <p>Charger</p>
+            <h4>{{ charger.chargerId }}</h4>
+          </div>
+          <div>
+            <p>Connector focus</p>
+            <h4>#{{ tapForm.get('connectorId')?.value ?? 1 }}</h4>
+          </div>
+          <div>
+            <p>Connection</p>
+            <h4>{{ selectedConnection()?.connectionState || charger.connectionState }}</h4>
+          </div>
+          <div>
+            <p>Remote endpoint</p>
+            <h4>{{ selectedConnection()?.remote || charger.transport?.csmsUrl || '-' }}</h4>
+          </div>
+          <div>
+            <p>Last message</p>
+            <h4>{{ charger.runtime?.lastMessageAt || '-' }}</h4>
+          </div>
+          <div>
+            <p>Active tx</p>
+            <h4>{{ getActiveTransactionCount(charger) }}</h4>
+          </div>
+        </div>
+
+        <div class="connector-grid" *ngIf="charger.connectors?.length">
+          <article class="connector-card" *ngFor="let connector of charger.connectors; trackBy: trackByConnectorId">
+            <div class="connector-card-head">
+              <div>
+                <p>Connector {{ connector.connectorId }}</p>
+                <h4>{{ connector.type }} · {{ connector.maxKw }} kW</h4>
+              </div>
+              <span
+                class="pill"
+                [class.on]="isConnectorHealthy(connector.status)"
+                [class.warn]="isConnectorWarning(connector.status)"
+                [class.muted]="!connector.status">
+                {{ connector.status || 'Unknown' }}
+              </span>
+            </div>
+            <div class="connector-meta">
+              <div>
+                <span>Error</span>
+                <strong>{{ connector.errorCode || 'NoError' }}</strong>
+              </div>
+              <div>
+                <span>Transaction</span>
+                <strong>{{ getConnectorTransaction(connector.connectorId)?.transactionId || 'Idle' }}</strong>
+              </div>
+              <div>
+                <span>Started</span>
+                <strong>{{ getConnectorTransaction(connector.connectorId)?.startedAt || '-' }}</strong>
+              </div>
+              <div>
+                <span>Auth</span>
+                <strong>{{ getConnectorTransaction(connector.connectorId)?.authorizationId || getConnectorTransaction(connector.connectorId)?.idTag || '-' }}</strong>
+              </div>
+            </div>
+            <div class="row actions">
+              <button class="link" type="button" (click)="setConnectorContext(connector.connectorId)">
+                Focus connector {{ connector.connectorId }}
+              </button>
+            </div>
+          </article>
+        </div>
+      </article>
+
+      <div class="section-list">
+        <details class="section-card" open>
+          <summary class="section-summary">
+            <div>
+              <h3>Connection lifecycle</h3>
+              <p>Connect, reconnect, disconnect, and inspect the active websocket path.</p>
+            </div>
+            <span class="pill" [class.on]="(selectedConnection()?.connectionState || charger.connectionState) === 'CONNECTED'">
+              {{ selectedConnection()?.connectionState || charger.connectionState }}
+            </span>
+          </summary>
+          <div class="section-body">
+            <form class="form" [formGroup]="connectionForm" (ngSubmit)="connectCharger()">
+              <div class="row">
+                <div class="field span-2">
+                  <label>CSMS URL</label>
+                  <input formControlName="csmsUrl" />
+                </div>
+                <label class="toggle"><input type="checkbox" formControlName="reconnectEnabled" />Reconnect enabled</label>
+              </div>
+              <div class="row">
+                <div class="field">
+                  <label>Min backoff (ms)</label>
+                  <input type="number" formControlName="minBackoffMs" />
+                </div>
+                <div class="field">
+                  <label>Max backoff (ms)</label>
+                  <input type="number" formControlName="maxBackoffMs" />
+                </div>
+              </div>
+              <div class="row actions">
+                <button class="btn primary" type="submit" [disabled]="!canConnect()">Connect</button>
+                <button class="btn ghost" type="button" (click)="fetchConnection()">Refresh state</button>
+              </div>
+            </form>
+
+            <form class="form" [formGroup]="disconnectForm" (ngSubmit)="disconnectCharger()">
+              <div class="row">
+                <div class="field">
+                  <label>Reason</label>
+                  <input formControlName="reason" />
+                </div>
+                <div class="field">
+                  <label>Close code</label>
+                  <input type="number" formControlName="closeCode" />
+                </div>
+              </div>
+              <div class="row actions">
+                <button class="btn" type="submit" [class.alert]="shouldHighlightDisconnect()" [class.ghost]="!shouldHighlightDisconnect()" [disabled]="!canDisconnect()">
+                  Disconnect
+                </button>
+              </div>
+            </form>
+          </div>
+        </details>
+
+        <details class="section-card" open>
+          <summary class="section-summary">
+            <div>
+              <h3>Authentication and PnC</h3>
+              <p>Run RFID-style taps and Plug-and-Charge contract flows against the focused connector.</p>
+            </div>
+          </summary>
+          <div class="section-body">
+            <form class="form" [formGroup]="tapForm" (ngSubmit)="tap()">
+              <div class="row">
+                <div class="field">
+                  <label>Connector ID</label>
+                  <input type="number" formControlName="connectorId" />
+                </div>
+                <div class="field">
+                  <label>Method</label>
+                  <input formControlName="method" />
+                </div>
+                <div class="field">
+                  <label>ID tag</label>
+                  <input formControlName="idTag" />
+                </div>
+              </div>
+              <div class="row">
+                <div class="field">
+                  <label>ID token type</label>
+                  <input formControlName="idTokenType" />
+                </div>
+                <div class="field span-2">
+                  <label>ID token value</label>
+                  <input formControlName="idTokenValue" />
+                </div>
+              </div>
+              <div class="row actions">
+                <button class="btn" type="submit" [class.primary]="canTap()" [class.ghost]="!canTap()" [disabled]="!canTap()">Send tap</button>
+              </div>
+            </form>
+
+            <form class="form" [formGroup]="pncStartForm" (ngSubmit)="startPnc()">
+              <div class="row">
+                <div class="field">
+                  <label>Connector ID</label>
+                  <input type="number" formControlName="connectorId" />
+                </div>
+                <div class="field">
+                  <label>VIN</label>
+                  <input formControlName="vin" />
+                </div>
+                <div class="field">
+                  <label>EMAID</label>
+                  <input formControlName="emaid" />
+                </div>
+              </div>
+              <div class="row">
+                <div class="field">
+                  <label>Contract cert ID</label>
+                  <input formControlName="contractCertId" />
+                </div>
+                <div class="field">
+                  <label>PnC token</label>
+                  <input formControlName="pncIdTokenValue" />
+                </div>
+                <div class="field">
+                  <label>Target power W</label>
+                  <input type="number" formControlName="targetPowerW" />
+                </div>
+              </div>
+              <div class="row actions">
+                <button class="btn" type="submit" [class.primary]="canStartPnc()" [class.ghost]="!canStartPnc()" [disabled]="!canStartPnc()">
+                  Start PnC
+                </button>
+              </div>
+            </form>
+
+            <form class="form" [formGroup]="pncStopForm" (ngSubmit)="stopPnc()">
+              <div class="row">
+                <div class="field">
+                  <label>Connector ID</label>
+                  <input type="number" formControlName="connectorId" />
+                </div>
+                <div class="field">
+                  <label>Reason</label>
+                  <input formControlName="reason" />
+                </div>
+                <label class="toggle"><input type="checkbox" formControlName="requestStopTransaction" />Request transaction stop</label>
+              </div>
+              <div class="row actions">
+                <button class="btn" type="submit" [class.alert]="canStopPnc()" [class.ghost]="!canStopPnc()" [disabled]="!canStopPnc()">
+                  Stop PnC
+                </button>
+              </div>
+            </form>
+          </div>
+        </details>
+
+        <details class="section-card" open>
+          <summary class="section-summary">
+            <div>
+              <h3>Charging operations</h3>
+              <p>Start and stop sessions, then push meter values and live transaction updates.</p>
+            </div>
+          </summary>
+          <div class="section-body">
+            <form class="form" [formGroup]="chargingStartForm" (ngSubmit)="requestStartCharging()">
+              <div class="row">
+                <div class="field">
+                  <label>Connector ID</label>
+                  <input type="number" formControlName="connectorId" />
+                </div>
+                <div class="field">
+                  <label>ID tag</label>
+                  <input formControlName="idTag" />
+                </div>
+                <div class="field">
+                  <label>Authorization ID</label>
+                  <input formControlName="authorizationId" />
+                </div>
+              </div>
+              <div class="row">
+                <div class="field">
+                  <label>Meter start Wh</label>
+                  <input type="number" formControlName="meterStartWh" />
+                </div>
+                <div class="field">
+                  <label>Target power W</label>
+                  <input type="number" formControlName="targetPowerW" />
+                </div>
+              </div>
+              <div class="row actions">
+                <button class="btn" type="submit" [class.primary]="shouldHighlightStartCharging()" [class.ghost]="!shouldHighlightStartCharging()" [disabled]="!canStartCharging()">
+                  Start charging
+                </button>
+              </div>
+            </form>
+
+            <form class="form" [formGroup]="chargingStopForm" (ngSubmit)="requestStopCharging()">
+              <div class="row">
+                <div class="field">
+                  <label>Connector ID</label>
+                  <input type="number" formControlName="connectorId" />
+                </div>
+                <div class="field">
+                  <label>Transaction ID</label>
+                  <input formControlName="transactionId" />
+                </div>
+                <div class="field">
+                  <label>Reason</label>
+                  <input formControlName="reason" />
+                </div>
+                <div class="field">
+                  <label>Meter stop Wh</label>
+                  <input type="number" formControlName="meterStopWh" />
+                </div>
+              </div>
+              <div class="row actions">
+                <button class="btn" type="submit" [class.alert]="shouldHighlightStopCharging()" [class.ghost]="!shouldHighlightStopCharging()" [disabled]="!canStopCharging()">
+                  Stop charging
+                </button>
+              </div>
+            </form>
+
+            <form class="form" [formGroup]="meterForm" (ngSubmit)="sendMeterValues()">
+              <div class="row">
+                <div class="field">
+                  <label>Connector ID</label>
+                  <input type="number" formControlName="connectorId" />
+                </div>
+                <div class="field">
+                  <label>Transaction ID</label>
+                  <input formControlName="transactionId" />
+                </div>
+                <div class="field">
+                  <label>Timestamp</label>
+                  <input formControlName="timestamp" />
+                </div>
+              </div>
+              <div class="row">
+                <div class="field">
+                  <label>Energy Wh</label>
+                  <input type="number" formControlName="energyWh" />
+                </div>
+                <div class="field">
+                  <label>Power W</label>
+                  <input type="number" formControlName="powerW" />
+                </div>
+                <div class="field">
+                  <label>SOC %</label>
+                  <input type="number" formControlName="socPercent" />
+                </div>
+              </div>
+              <div class="row actions">
+                <button class="btn" type="submit" [class.primary]="canSendMeterValues()" [class.ghost]="!canSendMeterValues()" [disabled]="!canSendMeterValues()">
+                  Send meter values
+                </button>
+              </div>
+            </form>
+          </div>
+        </details>
+
+        <details class="section-card" open>
+          <summary class="section-summary">
+            <div>
+              <h3>Status, faults, and OCPP</h3>
+              <p>Control connector state, fault injection, heartbeat timing, and raw OCPP calls.</p>
+            </div>
+          </summary>
+          <div class="section-body">
+            <form class="form" [formGroup]="statusForm" (ngSubmit)="setStatus()">
+              <div class="row">
+                <div class="field">
+                  <label>Connector ID</label>
+                  <input type="number" formControlName="connectorId" />
+                </div>
+                <div class="field">
+                  <label>Status</label>
+                  <select formControlName="status">
+                    <option>Available</option>
+                    <option>Preparing</option>
+                    <option>Charging</option>
+                    <option>SuspendedEV</option>
+                    <option>SuspendedEVSE</option>
+                    <option>Finishing</option>
+                    <option>Unavailable</option>
+                    <option>Faulted</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label>Error code</label>
+                  <input formControlName="errorCode" />
+                </div>
+              </div>
+              <div class="row actions">
+                <button class="btn" type="submit" [class.primary]="canSetStatus()" [class.ghost]="!canSetStatus()" [disabled]="!canSetStatus()">
+                  Update status
+                </button>
+              </div>
+            </form>
+
+            <form class="form" [formGroup]="faultForm" (ngSubmit)="injectFault()">
+              <div class="row">
+                <div class="field">
+                  <label>Connector ID</label>
+                  <input type="number" formControlName="connectorId" />
+                </div>
+                <div class="field">
+                  <label>Fault type</label>
+                  <input formControlName="type" />
+                </div>
+                <div class="field">
+                  <label>Error code</label>
+                  <input formControlName="errorCode" />
+                </div>
+              </div>
+              <div class="row">
+                <div class="field">
+                  <label>Duration sec</label>
+                  <input type="number" formControlName="durationSec" />
+                </div>
+                <label class="toggle"><input type="checkbox" formControlName="disconnect" />Disconnect while faulting</label>
+              </div>
+              <div class="row actions">
+                <button class="btn" type="submit" [class.primary]="canInjectFault()" [class.ghost]="!canInjectFault()" [disabled]="!canInjectFault()">
+                  Inject fault
+                </button>
+                <button class="btn" type="button" [class.alert]="canClearFault()" [class.ghost]="!canClearFault()" [disabled]="!canClearFault()" (click)="clearFault()">
+                  Clear fault
+                </button>
+              </div>
+            </form>
+
+            <form class="form" [formGroup]="heartbeatForm" (ngSubmit)="updateHeartbeatInterval()">
+              <div class="row">
+                <div class="field">
+                  <label>Heartbeat interval sec</label>
+                  <input type="number" formControlName="heartbeatIntervalSec" />
+                </div>
+              </div>
+              <div class="row actions">
+                <button class="btn" type="button" [class.primary]="canSendHeartbeat()" [class.ghost]="!canSendHeartbeat()" [disabled]="!canSendHeartbeat()" (click)="sendHeartbeat()">
+                  Send heartbeat now
+                </button>
+                <button class="btn" type="submit" [class.primary]="canSendHeartbeat()" [class.ghost]="!canSendHeartbeat()" [disabled]="!canSendHeartbeat()">
+                  Update interval
+                </button>
+              </div>
+            </form>
+
+            <form class="form" [formGroup]="ocppSendForm" (ngSubmit)="sendOcpp()">
+              <div class="row">
+                <div class="field">
+                  <label>Action</label>
+                  <input formControlName="action" />
+                </div>
+                <div class="field">
+                  <label>Timeout ms</label>
+                  <input type="number" formControlName="timeoutMs" />
+                </div>
+                <label class="toggle"><input type="checkbox" formControlName="awaitResponse" />Await response</label>
+              </div>
+              <div class="field">
+                <label>Payload (JSON)</label>
+                <textarea rows="4" formControlName="payload"></textarea>
+              </div>
+              <div class="row actions">
+                <button class="btn" type="submit" [class.primary]="canSendOcpp()" [class.ghost]="!canSendOcpp()" [disabled]="!canSendOcpp()">Send OCPP</button>
+              </div>
+            </form>
+          </div>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <div class="dialog-backdrop" *ngIf="pendingConfirmation() as dialog" (click)="closeConfirmation()">
+    <div class="dialog-card" (click)="$event.stopPropagation()">
+      <h3>{{ dialog.title }}</h3>
+      <p>{{ dialog.message }}</p>
+      <div class="row actions">
+        <button class="btn ghost" type="button" (click)="closeConfirmation()">Cancel</button>
+        <button class="btn primary" type="button" (click)="confirmPendingAction()">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <section class="screen" *ngIf="activeScreen() === 'events'">
+    <div class="columns">
+      <article class="panel">
+        <header>
+          <div>
+            <h2>Event stream</h2>
+            <p>Server-sent events from simulator backend</p>
+          </div>
+          <span class="pill" [class.on]="eventStreamConnected()">
+            {{ eventStreamConnected() ? 'Connected' : 'Disconnected' }}
+          </span>
+        </header>
+        <div class="row actions">
+          <button class="btn ghost" type="button" (click)="openEventStream()">Connect</button>
+          <button class="btn ghost" type="button" (click)="closeEventStream()">Disconnect</button>
+        </div>
+        <div class="event-list">
+          <article class="event" *ngFor="let item of events(); trackBy: trackByIndex">
+            <div class="event-meta">
+              <span>{{ item.type || 'EVENT' }}</span>
+              <span>{{ item.at }}</span>
+            </div>
+            <pre>{{ item.payload }}</pre>
+          </article>
+        </div>
+      </article>
+
+      <article class="panel">
+        <header>
+          <div>
+            <h2>Action log</h2>
+            <p>Recent UI actions and request outcomes</p>
+          </div>
+        </header>
+        <div class="event-list">
+          <article class="event" *ngFor="let item of actionLog(); trackBy: trackByIndex">
+            <pre>{{ item }}</pre>
+          </article>
+        </div>
+      </article>
+    </div>
+  </section>
+</div>

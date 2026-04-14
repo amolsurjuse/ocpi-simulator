@@ -1,0 +1,8 @@
+.git
+.github
+.idea
+ui/.angular
+ui/.git
+ui/dist
+ui/node_modules
+ui/out-tsc

@@ -1,6 +1,6 @@
 # OCPI Simulator
 
-Production-grade OCPI 2.2.1 mock service for CPO + EMSP flows with WebSocket event streaming.
+Production-grade OCPI 2.2.1 mock service with an integrated OCPP simulator frontend (single deployable backend + UI).
 
 ## Features
 - OCPI 2.2.1 versions + endpoints discovery
@@ -8,6 +8,8 @@ Production-grade OCPI 2.2.1 mock service for CPO + EMSP flows with WebSocket eve
 - In-memory charger/session store
 - WebSocket event stream for DMS, start, meter_value, stop, unplug
 - REST API to add/remove chargers and drive sessions
+- Environment import API to pull chargers/connectors from a remote `getChargers` endpoint
+- Built-in Angular UI served by the simulator service
 - Docker and Kubernetes manifests
 
 ## Quick start
@@ -20,9 +22,27 @@ Default port: `8081`
 
 Base URL defaults to `http://localhost:8081`
 
+To run the integrated frontend from the same service locally:
+
+```bash
+cd ui
+npm install
+npm run build
+cd ..
+go run ./cmd/ocpi-simulator
+```
+
+Then open:
+
+- `http://localhost:8081/`
+- `http://localhost:8081/ocpp-simulator-ui` (backward-compatible UI path)
+
 ## Environment variables
 - `PORT` (default `8081`)
 - `BASE_URL` (default `http://localhost:<PORT>`)
+- `UI_ENABLED` (default `true`)
+- `UI_STATIC_DIR` (default `ui/dist/ocpi-simulator-ui/browser`, container default `/ui`)
+- `ENVIRONMENT_TIMEOUT` (default `15s`, timeout for remote environment `getChargers` calls)
 - `EVENT_INTERVAL` (default `5s`)
 - `READ_TIMEOUT` (default `10s`)
 - `WRITE_TIMEOUT` (default `20s`)
@@ -91,6 +111,7 @@ Fleet management API (v1):
 - `POST /api/v1/chargers/bulk/disconnect`
 - `GET /api/v1/stats`
 - `GET /api/v1/events/stream?chargerId=sim-000001` (SSE)
+- `POST /api/v1/environment/chargers/import` (import chargers + connectors from an external environment)
 
 Create charger:
 ```json
@@ -116,6 +137,16 @@ Create charger:
     "boot": { "vendor": "SimVendor", "model": "SimModel-1", "firmwareVersion": "1.0.0" }
   },
   "tags": { "site": "lab", "shard": "pod-3" }
+}
+```
+
+Import chargers from a remote environment:
+```json
+{
+  "environmentUrl": "https://dev.electrahub.com:8443",
+  "getChargersPath": "/api/v1/chargers",
+  "bearerToken": "optional-token",
+  "skipTlsVerify": false
 }
 ```
 
@@ -151,6 +182,8 @@ Supported action: `BootNotification` (returns `Accepted`).
 docker build -t ocpi-simulator .
 docker run -p 8081:8081 ocpi-simulator
 ```
+
+The container builds and serves both backend APIs and frontend UI.
 
 ## Kubernetes
 

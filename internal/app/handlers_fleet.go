@@ -84,6 +84,11 @@ func (a *App) handleV1(w http.ResponseWriter, r *http.Request, segments []string
 	case "chargers":
 		a.handleV1Chargers(w, r, segments[1:])
 		return
+	case "environment":
+		if len(segments) == 3 && segments[1] == "chargers" && segments[2] == "import" && r.Method == http.MethodPost {
+			a.handleImportEnvironmentChargers(w, r)
+			return
+		}
 	case "stats":
 		if r.Method == http.MethodGet {
 			a.handleStats(w, r)
