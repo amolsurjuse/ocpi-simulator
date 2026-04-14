@@ -1,0 +1,37 @@
+@import url('https://fonts.googleapis.com/css2?family=Work+Sans:wght@300;400;500;600;700&family=Newsreader:wght@500;600;700&display=swap');
+
+:root {
+  --brand: #0a66c2;
+  --teal: #0f9d8a;
+  --ink: #0b1b2b;
+  --muted: #5c6b7a;
+  --surface: rgba(255, 255, 255, 0.92);
+  --surface-border: #e3e8ef;
+  --shadow: 0 20px 50px rgba(10, 24, 40, 0.08);
+  --shadow-soft: 0 12px 30px rgba(10, 24, 40, 0.06);
+  --display-font: 'Newsreader', serif;
+  --body-font: 'Work Sans', sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: var(--body-font);
+  background: linear-gradient(135deg, #f6f8fb 0%, #eef2f8 45%, #f5faff 100%);
+  color: var(--ink);
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+}

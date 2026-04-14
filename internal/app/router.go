@@ -80,6 +80,10 @@ func (a *App) handleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if a.serveUIIfEnabled(w, r, path) {
+		return
+	}
+
 	http.NotFound(w, r)
 }
 

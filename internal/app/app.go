@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +24,8 @@ type App struct {
 	hub          *ws.Hub
 	fleetHub     *fleet.EventHub
 	wsConnector  *wsConnectorClient
+	httpClient   *http.Client
+	uiStaticDir  string
 	log          *slog.Logger
 	credMu       sync.RWMutex
 	credentials  ocpi.Credentials
@@ -66,6 +69,11 @@ func New(cfg Config, logger *slog.Logger) *App {
 		LastUpdated:     time.Now().UTC(),
 	}
 
+	uiStaticDir := strings.TrimSpace(cfg.UIStaticDir)
+	if uiStaticDir == "" {
+		uiStaticDir = filepath.Join("ui", "dist", "ocpi-simulator-ui", "browser")
+	}
+
 	return &App{
 		cfg:         cfg,
 		store:       store.NewStore(),
@@ -73,6 +81,10 @@ func New(cfg Config, logger *slog.Logger) *App {
 		hub:         ws.NewHub(),
 		fleetHub:    fleet.NewEventHub(),
 		wsConnector: newWSConnectorClient(cfg.WebSocketConnectorURL),
+		httpClient: &http.Client{
+			Timeout: cfg.EnvironmentTimeout,
+		},
+		uiStaticDir: uiStaticDir,
 		log:         logger,
 		credentials: credentials,
 		eventCycle:  make(map[string]int),

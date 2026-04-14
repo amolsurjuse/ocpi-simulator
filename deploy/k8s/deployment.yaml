@@ -28,6 +28,12 @@ spec:
               value: "http://ocpi-simulator:8081"
             - name: LOG_LEVEL
               value: "info"
+            - name: UI_ENABLED
+              value: "true"
+            - name: UI_STATIC_DIR
+              value: "/ui"
+            - name: ENVIRONMENT_TIMEOUT
+              value: "20s"
           readinessProbe:
             httpGet:
               path: /readyz
