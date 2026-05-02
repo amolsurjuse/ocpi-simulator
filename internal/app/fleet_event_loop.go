@@ -70,13 +70,7 @@ func (a *App) tickFleetEvents() {
 		})
 
 		if !a.cfg.AutonomousEventCycle {
-			a.emitFleetEvent(fleet.Event{
-				Type:        "HEARTBEAT",
-				Timestamp:   now,
-				ChargerID:   charger.ChargerID,
-				ConnectorID: connectorID,
-			})
-			a.emitStatusNotification(charger, connectorID, "Available", "NoError", now)
+			a.emitHeartbeat(charger, connectorID, now)
 			continue
 		}
 
@@ -177,6 +171,20 @@ func (a *App) emitStatusNotification(charger fleet.Charger, connectorID int, sta
 	})
 
 	a.forwardOCPPAction(charger, action, buildStatusPayload(charger, connectorID, status, errorCode, now))
+}
+
+func (a *App) emitHeartbeat(charger fleet.Charger, connectorID int, now time.Time) {
+	a.emitFleetEvent(fleet.Event{
+		Type:        "HEARTBEAT",
+		Timestamp:   now,
+		ChargerID:   charger.ChargerID,
+		ConnectorID: connectorID,
+		Data: map[string]any{
+			"ocppAction":  "Heartbeat",
+			"ocppVersion": charger.OCPPVersion,
+		},
+	})
+	a.forwardOCPPAction(charger, "Heartbeat", map[string]any{})
 }
 
 func (a *App) emitMeterTelemetry(charger fleet.Charger, connectorID int, txID string, meterWh int64, now time.Time) {
