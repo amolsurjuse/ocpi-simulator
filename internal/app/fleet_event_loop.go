@@ -64,11 +64,23 @@ func (a *App) tickFleetEvents() {
 			continue
 		}
 
-		step := a.nextEventStep(charger.ChargerID)
-
 		_, _ = a.fleet.UpdateRuntime(charger.ChargerID, func(runtime *fleet.Runtime) {
 			runtime.LastMessageAt = &now
+			runtime.LastHeartbeatAt = &now
 		})
+
+		if !a.cfg.AutonomousEventCycle {
+			a.emitFleetEvent(fleet.Event{
+				Type:        "HEARTBEAT",
+				Timestamp:   now,
+				ChargerID:   charger.ChargerID,
+				ConnectorID: connectorID,
+			})
+			a.emitStatusNotification(charger, connectorID, "Available", "NoError", now)
+			continue
+		}
+
+		step := a.nextEventStep(charger.ChargerID)
 
 		switch step {
 		case 0:

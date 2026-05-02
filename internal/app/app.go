@@ -92,11 +92,13 @@ func New(cfg Config, logger *slog.Logger) *App {
 }
 
 func (a *App) StartBackground(ctx context.Context) {
+	a.seedConfiguredChargers()
 	go a.hub.Run(ctx)
 	stop := make(chan struct{})
 	go a.fleetHub.Run(stop)
 	go a.runMeterLoop(ctx)
 	go a.runFleetEventLoop(ctx)
+	go a.runAutoConnectLoop(ctx)
 
 	go func() {
 		<-ctx.Done()

@@ -320,56 +320,15 @@ func (a *App) handleConnectCharger(w http.ResponseWriter, r *http.Request, charg
 	}
 	_ = decodeJSON(w, r, &payload)
 
-	charger, ok := a.fleet.GetCharger(chargerID)
-	if !ok {
+	if _, ok := a.fleet.GetCharger(chargerID); !ok {
 		http.NotFound(w, r)
 		return
 	}
 
-	targetURL := strings.TrimSpace(payload.CSMSURL)
-	if targetURL == "" {
-		targetURL = strings.TrimSpace(charger.Transport.CSMSURL)
+	if err := a.connectChargerThroughConnector(chargerID, payload.CSMSURL); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
 	}
-	if targetURL == "" || strings.Contains(targetURL, "example.com") {
-		targetURL = a.defaultSimulatorOCPPURL(charger)
-	}
-	charger.Transport.CSMSURL = targetURL
-	_, _ = a.fleet.UpdateCharger(charger)
-
-	now := time.Now().UTC()
-	charger.ConnectionState = "CONNECTING"
-	charger.ConnectionSince = &now
-	charger.ConnectionRemote = hostFromURL(targetURL)
-	_, _ = a.fleet.UpdateCharger(charger)
-
-	a.emitFleetEvent(fleet.Event{Type: "CONNECTING", Timestamp: now, ChargerID: chargerID})
-
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		connectErr := a.wsConnector.Connect(ctx, charger, targetURL)
-		if connectErr != nil {
-			at := time.Now().UTC()
-			_, _ = a.fleet.UpdateConnectionState(chargerID, "ERROR", hostFromURL(targetURL), &at)
-			a.emitFleetEvent(fleet.Event{
-				Type:      "CONNECTION_ERROR",
-				Timestamp: at,
-				ChargerID: chargerID,
-				Message:   connectErr.Error(),
-			})
-			return
-		}
-
-		connectedAt := time.Now().UTC()
-		_, _ = a.fleet.UpdateConnectionState(chargerID, "CONNECTED", hostFromURL(targetURL), &connectedAt)
-		_, _ = a.fleet.UpdateRuntime(chargerID, func(runtime *fleet.Runtime) {
-			runtime.LastHeartbeatAt = &connectedAt
-			runtime.LastMessageAt = &connectedAt
-		})
-		a.emitFleetEvent(fleet.Event{Type: "CONNECTED", Timestamp: connectedAt, ChargerID: chargerID})
-		a.resetEventStep(chargerID)
-	}()
 
 	respondJSON(w, http.StatusAccepted, updateStatusResponse{ChargerID: chargerID, Status: "CONNECTING"})
 }
@@ -1154,20 +1113,7 @@ func filterChargers(chargers []fleet.Charger, filter map[string]string) []fleet.
 }
 
 func (a *App) connectChargerAsync(chargerID string) error {
-	now := time.Now().UTC()
-	_, err := a.fleet.UpdateConnectionState(chargerID, "CONNECTING", "", &now)
-	if err != nil {
-		return err
-	}
-	a.emitFleetEvent(fleet.Event{Type: "CONNECTING", Timestamp: now, ChargerID: chargerID})
-
-	go func() {
-		time.Sleep(150 * time.Millisecond)
-		at := time.Now().UTC()
-		_, _ = a.fleet.UpdateConnectionState(chargerID, "CONNECTED", "", &at)
-		a.emitFleetEvent(fleet.Event{Type: "CONNECTED", Timestamp: at, ChargerID: chargerID})
-	}()
-	return nil
+	return a.connectChargerThroughConnector(chargerID, "")
 }
 
 func (a *App) disconnectChargerAsync(chargerID string) error {
